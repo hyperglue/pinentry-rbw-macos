@@ -9,6 +9,8 @@ private final class DebugLog {
     private let handle: FileHandle?
 
     /// 日志单文件最大字节数（默认 1 MiB）。超限时截断为后半段保留近期内容。
+    /// Maximum log file size in bytes (default 1 MiB). When exceeded, the file is
+    /// truncated to its second half to retain recent entries.
     private static let maxBytes: UInt64 = 1 * 1024 * 1024
 
     init(path: String?) {
@@ -20,11 +22,12 @@ private final class DebugLog {
         if !manager.fileExists(atPath: path) {
             manager.createFile(atPath: path, contents: nil)
         }
-        // 超过限制时截断：保留后半段（近期日志）
+        // 超过限制时截断：保留后半段（近期日志)
+        // When the file exceeds the limit, truncate it: keep the second half (recent logs)
         if let attrs = try? manager.attributesOfItem(atPath: path),
-           let size = attrs[.size] as? UInt64,
-           size > Self.maxBytes,
-           let fh = FileHandle(forUpdatingAtPath: path)
+            let size = attrs[.size] as? UInt64,
+            size > Self.maxBytes,
+            let fh = FileHandle(forUpdatingAtPath: path)
         {
             let keepFrom = size / 2
             fh.seek(toFileOffset: keepFrom)
@@ -117,7 +120,7 @@ private final class GUI {
     func readPassword(state: SessionState) -> PasswordPromptResult {
         let env = ProcessInfo.processInfo.environment
         if env["SSH_CONNECTION"] != nil || env["SSH_TTY"] != nil {
-            return .unavailable("当前会话是 SSH，跳过 GUI")
+            return .unavailable("Current session is SSH, skipping GUI")
         }
 
         let process = Process()
@@ -134,13 +137,15 @@ private final class GUI {
         do {
             try process.run()
         } catch {
-            return .unavailable("无法启动 osascript: \(error.localizedDescription)")
+            return .unavailable("Failed to launch osascript: \(error.localizedDescription)")
         }
 
         process.waitUntilExit()
-        let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+        let output =
+            String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let errorOutput = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+        let errorOutput =
+            String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         if process.terminationStatus == 0 {
@@ -152,7 +157,7 @@ private final class GUI {
         if errorOutput.localizedCaseInsensitiveContains("user canceled") {
             return .cancelled
         }
-        return .unavailable(errorOutput.isEmpty ? "图形密码框执行失败" : errorOutput)
+        return .unavailable(errorOutput.isEmpty ? "GUI password dialog failed" : errorOutput)
     }
 
     private func buildAppleScript(state: SessionState) -> String {
@@ -174,11 +179,11 @@ private final class GUI {
         let cancel = escapeForAppleScript(state.cancelLabel)
 
         return """
-        tell application "System Events"
-            activate
-            text returned of (display dialog "\(message)" with title "\(title)" buttons {"\(cancel)", "\(ok)"} default button "\(ok)" cancel button "\(cancel)" default answer "" with hidden answer)
-        end tell
-        """
+            tell application "System Events"
+                activate
+                text returned of (display dialog "\(message)" with title "\(title)" buttons {"\(cancel)", "\(ok)"} default button "\(ok)" cancel button "\(cancel)" default answer "" with hidden answer)
+            end tell
+            """
     }
 
     func showMessage(state: SessionState) {
@@ -190,11 +195,11 @@ private final class GUI {
         )
         let title = escapeForAppleScript(state.title)
         let script = """
-        tell application "System Events"
-            activate
-            display alert "\(title)" message "\(message)"
-        end tell
-        """
+            tell application "System Events"
+                activate
+                display alert "\(title)" message "\(message)"
+            end tell
+            """
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", script]
@@ -203,6 +208,7 @@ private final class GUI {
     }
 
     /// 返回 true 表示用户确认（点击 OK 标签按钮），false 表示取消。
+    /// Returns true if the user confirmed (clicked the OK button), false if cancelled.
     func showConfirm(state: SessionState) -> Bool {
         let env = ProcessInfo.processInfo.environment
         guard env["SSH_CONNECTION"] == nil, env["SSH_TTY"] == nil else { return false }
@@ -210,15 +216,15 @@ private final class GUI {
         let message = escapeForAppleScript(
             [state.description, state.errorText].filter { !$0.isEmpty }.joined(separator: "\n\n")
         )
-        let title  = escapeForAppleScript(state.title)
-        let ok     = escapeForAppleScript(state.okLabel)
+        let title = escapeForAppleScript(state.title)
+        let ok = escapeForAppleScript(state.okLabel)
         let cancel = escapeForAppleScript(state.cancelLabel)
         let script = """
-        tell application "System Events"
-            activate
-            button returned of (display dialog "\(message)" with title "\(title)" buttons {"\(cancel)", "\(ok)"} default button "\(ok)" cancel button "\(cancel)")
-        end tell
-        """
+            tell application "System Events"
+                activate
+                button returned of (display dialog "\(message)" with title "\(title)" buttons {"\(cancel)", "\(ok)"} default button "\(ok)" cancel button "\(cancel)")
+            end tell
+            """
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", script]
@@ -227,7 +233,8 @@ private final class GUI {
         try? process.run()
         process.waitUntilExit()
         if process.terminationStatus != 0 { return false }
-        let result = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+        let result =
+            String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return result == state.okLabel
     }
@@ -245,9 +252,13 @@ private struct KeychainStore {
     let config: Config
 
     /// 从 Keychain 读取已存密码。
+    /// Read the stored password from Keychain.
     ///
     /// 约束：所有读取路径都必须经过这里，先做 LocalAuthentication，再读普通 Keychain 条目。
     /// 不要新增绕过认证的直接读取入口。
+    /// Constraint: all read paths must go through here — run LocalAuthentication first,
+    /// then read the plain Keychain item. Do not add any direct read entry that bypasses
+    /// authentication.
     func fetchAuthorizedPassword(prompt: String) -> RetrievalResult {
         switch authorize(prompt: prompt) {
         case .success:
@@ -264,6 +275,7 @@ private struct KeychainStore {
     }
 
     /// 保存密码到 Keychain。
+    /// Save the password to Keychain.
     func savePassword(_ password: String) throws {
         let query = itemQuery()
 
@@ -279,17 +291,20 @@ private struct KeychainStore {
             return
         case errSecDuplicateItem:
             let attributesToUpdate: [CFString: Any] = [
-                kSecValueData: Data(password.utf8),
+                kSecValueData: Data(password.utf8)
             ]
-            let updateStatus = SecItemUpdate(query as CFDictionary, attributesToUpdate as CFDictionary)
+            let updateStatus = SecItemUpdate(
+                query as CFDictionary, attributesToUpdate as CFDictionary)
             guard updateStatus == errSecSuccess else {
                 throw PinentryExit.failed(
-                    SecCopyErrorMessageString(updateStatus, nil) as String? ?? "Keychain 更新失败: \(updateStatus)"
+                    SecCopyErrorMessageString(updateStatus, nil) as String?
+                        ?? "Keychain update failed: \(updateStatus)"
                 )
             }
         default:
             throw PinentryExit.failed(
-                SecCopyErrorMessageString(addStatus, nil) as String? ?? "Keychain 写入失败: \(addStatus)"
+                SecCopyErrorMessageString(addStatus, nil) as String?
+                    ?? "Keychain write failed: \(addStatus)"
             )
         }
     }
@@ -298,7 +313,8 @@ private struct KeychainStore {
         let status = SecItemDelete(itemQuery() as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw PinentryExit.failed(
-                SecCopyErrorMessageString(status, nil) as String? ?? "Keychain 删除失败: \(status)"
+                SecCopyErrorMessageString(status, nil) as String?
+                    ?? "Keychain delete failed: \(status)"
             )
         }
     }
@@ -318,7 +334,7 @@ private struct KeychainStore {
                 let data = item as? Data,
                 let password = String(data: data, encoding: .utf8)
             else {
-                return .unavailable("Keychain 返回了不可解析的数据")
+                return .unavailable("Keychain returned data that could not be parsed")
             }
             return .success(password)
         case errSecItemNotFound:
@@ -326,7 +342,9 @@ private struct KeychainStore {
         case errSecUserCanceled, errSecAuthFailed:
             return .cancelled
         default:
-            return .unavailable(SecCopyErrorMessageString(status, nil) as String? ?? "Keychain 读取失败: \(status)")
+            return .unavailable(
+                SecCopyErrorMessageString(status, nil) as String?
+                    ?? "Keychain read failed: \(status)")
         }
     }
 
@@ -348,16 +366,19 @@ private struct KeychainStore {
         }
         guard existsStatus == errSecSuccess else {
             return .unavailable(
-                SecCopyErrorMessageString(existsStatus, nil) as String? ?? "Keychain 检查失败: \(existsStatus)"
+                SecCopyErrorMessageString(existsStatus, nil) as String?
+                    ?? "Keychain check failed: \(existsStatus)"
             )
         }
 
         let context = LAContext()
-        context.localizedFallbackTitle = "输入登录密码"
+        context.localizedFallbackTitle = "Enter login password"
 
         var authError: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &authError) else {
-            return .unavailable(authError?.localizedDescription ?? "当前设备不支持 LocalAuthentication")
+            return .unavailable(
+                authError?.localizedDescription
+                    ?? "This device does not support LocalAuthentication")
         }
 
         final class AuthBox: @unchecked Sendable {
@@ -366,15 +387,19 @@ private struct KeychainStore {
 
         let semaphore = DispatchSemaphore(value: 0)
         let authBox = AuthBox()
-        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: prompt) { success, error in
+        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: prompt) {
+            success, error in
             if success {
                 authBox.result = .success("")
             } else {
                 let nsError = error as NSError?
-                if nsError?.code == LAError.userCancel.rawValue || nsError?.code == LAError.appCancel.rawValue {
+                if nsError?.code == LAError.userCancel.rawValue
+                    || nsError?.code == LAError.appCancel.rawValue
+                {
                     authBox.result = .cancelled
                 } else {
-                    authBox.result = .unavailable(nsError?.localizedDescription ?? "认证失败")
+                    authBox.result = .unavailable(
+                        nsError?.localizedDescription ?? "Authentication failed")
                 }
             }
             semaphore.signal()
@@ -447,21 +472,22 @@ private final class PinentryServer {
             try keychain.deletePassword()
             print("cleared \(config.account) in \(config.service)")
         case "--help":
-            print("""
-            pinentry-rbw-macos
+            print(
+                """
+                pinentry-rbw-macos
 
-            Usage:
-              pinentry-rbw-macos            Run the pinentry server
-              pinentry-rbw-macos --store    Prompt on /dev/tty and seed Keychain
-              pinentry-rbw-macos --store-stdin
-                                            Read a password from stdin and seed Keychain
-              pinentry-rbw-macos --clear    Remove the stored password
+                Usage:
+                  pinentry-rbw-macos            Run the pinentry server
+                  pinentry-rbw-macos --store    Prompt on /dev/tty and seed Keychain
+                  pinentry-rbw-macos --store-stdin
+                                                Read a password from stdin and seed Keychain
+                  pinentry-rbw-macos --clear    Remove the stored password
 
-            Environment:
-              RBW_PROFILE             Used to separate entries by rbw profile
-              PINENTRY_RBW_SERVICE    Override Keychain service name
-              PINENTRY_RBW_ACCOUNT    Override Keychain account name
-            """)
+                Environment:
+                  RBW_PROFILE             Used to separate entries by rbw profile
+                  PINENTRY_RBW_SERVICE    Override Keychain service name
+                  PINENTRY_RBW_ACCOUNT    Override Keychain account name
+                """)
         default:
             throw PinentryExit.failed("unknown argument: \(command)")
         }
@@ -584,7 +610,9 @@ private final class PinentryServer {
             writeOK()
         case .unavailable(let reason):
             logger.write("GETPIN unavailable; fallback tty reason=\(reason)")
-            tty.printLine("[pinentry-rbw-macos] Keychain/生物识别不可用，回退到手动输入：\(reason)")
+            tty.printLine(
+                "[pinentry-rbw-macos] Keychain/biometrics unavailable, falling back to manual entry: \(reason)"
+            )
             let password = try readPasswordInteractively(state: state)
             try keychain.savePassword(password)
             writeData(password)
@@ -600,6 +628,7 @@ private final class PinentryServer {
             return try promptPassword(state: state)
         }
         // 需要二次确认：循环直到两次输入匹配或用户取消
+        // Confirmation required: loop until both inputs match or the user cancels
         var currentState = state
         while true {
             let password = try promptPassword(state: currentState)
@@ -627,7 +656,8 @@ private final class PinentryServer {
             throw PinentryExit.cancelled
         case .unavailable(let reason):
             logger.write("GUI unavailable; fallback tty reason=\(reason)")
-            tty.printLine("[pinentry-rbw-macos] GUI 不可用，回退到终端输入：\(reason)")
+            tty.printLine(
+                "[pinentry-rbw-macos] GUI unavailable, falling back to terminal input: \(reason)")
             return try readPasswordFromTTY(state: state)
         }
     }
